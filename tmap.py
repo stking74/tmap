@@ -25,6 +25,7 @@ class TMap:
         self.fluid = np.zeros_like(self.volume, dtype=float)
         self.tortuosity = None
         self.step_size = step
+        self.seeds = []
 
         self.realspace_map = np.zeros(shape=(z,y,x,3))  #Map of coordinate space to real space for datasets with uneven step sizes
         for i in range(z):
@@ -38,6 +39,7 @@ class TMap:
             if type(seed) is list:
                 self.seeds = seed
             elif type(seed) is str:
+                acceptable_strings = ['random','center','x','-x','y','-y','z','-z']
                 if seed == 'random':
                     #If seed is 'random', randomly generate coordinate tuples
                     #until an empty voxel is found, use as intiial seed
@@ -48,6 +50,33 @@ class TMap:
                         if self.volume[a,b,c] == 0:
                             is_empty = True
                             self.seeds = [(a,b,c)]
+                elif seed == 'center':
+                    self.seeds = [self._autoseed_()]
+                elif seed == 'x':
+                    for i in range(y):
+                        for j in range(z):
+                            self.seeds.append((j,i,0))
+                elif seed == '-x':
+                    for i in range(y):
+                        for j in range(z):
+                            self.seeds.append((j,i,x-1))
+                elif seed == 'y':
+                    for i in range(x):
+                        for j in range(z):
+                            self.seeds.append((j,0,i))
+                elif seed == '-y':
+                    for i in range(x):
+                        for j in range(z):
+                            self.seeds.append((j,y-1,i))
+                elif seed == 'z':
+                    for i in range(x):
+                        for j in range(y):
+                            self.seeds.append((0,i,j))
+                elif seed == '-z':
+                    for i in range(x):
+                        for j in range(y):
+                            self.seeds.append((z-1,i,j))
+
         for seed in self.seeds:
             self.set_seed(seed)
         return
@@ -74,7 +103,6 @@ class TMap:
         print('Warning! No suitable autoseed location could be found!')
         print('Please manually specify a fluid seed location!')
         return
-
 
     def set_seed(self, location):
         a, b, c = location
@@ -185,7 +213,7 @@ class TMap:
             self.step()
         return
 
-    def fill(self, mode='chessboard'):
+    def fill(self, mode='euclidean'):
         old_sum = 0
         new_sum = 1
         while new_sum > old_sum:
@@ -194,7 +222,7 @@ class TMap:
             new_sum = np.sum(self.fluid)
         return
 
-    def calc_tortuosity(self, mode='chessboard'):
+    def calc_tortuosity(self, mode='euclidean', faces_only=False):
         zz,xx,yy = self.shape
         comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
         comp_map.fill(mode=mode)
@@ -262,7 +290,7 @@ if __name__ == "__main__":
     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
     tmap.show(title='Isotropic')
     print('Isotropic tortuosity: %f'%(tortuosity))
-    
+
     tortuosities = []
     for i in range(25):
         tmap = TMap(base, step=(5,10,10), seed='random')
@@ -270,14 +298,14 @@ if __name__ == "__main__":
         tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
         # tmap.show(title='Isotropic')
         tortuosities.append(tortuosity)
-        
+
     print('Randomized Isotropic tortuosity: %f'%(np.median(tortuosities)))
 
     seeds = []
     for i in range(25):
         for j in range(25):
             seeds.append((0,i,j))
-    tmap = TMap(base, seed = seeds, step=(5,10,10))
+    tmap = TMap(base, seed=seeds, step=(5,10,10))
     tmap.fill('euclidean')
     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
     tmap.show(title='Ansotropic Z')
@@ -287,7 +315,7 @@ if __name__ == "__main__":
     for i in range(25):
         for j in range(4):
             seeds.append((j,0,i))
-    tmap = TMap(base, seed = seeds)
+    tmap = TMap(base, seed=seeds, step=(5,10,10))
     tmap.fill('euclidean')
     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
     tmap.show(title='Ansotropic Y')
@@ -297,7 +325,7 @@ if __name__ == "__main__":
     for i in range(25):
         for j in range(4):
             seeds.append((j,i,0))
-    tmap = TMap(base, seed = seeds)
+    tmap = TMap(base, seed=seeds, step=(5,10,10))
     tmap.fill('euclidean')
     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
     tmap.show(title='Ansotropic X')
