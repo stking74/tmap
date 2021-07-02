@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 """
+tmap.py
+
+Module for performing tortuosity estimation calculations on 3D volumetric
+datasets. Estimates tortuosity by simulating turbulence-free flow of a virtual
+fluid through the input sampled space. Algorithm inspired by and based on
+the one described by Chen-Wiegart et al in:
+    http://dx.doi.org/10.1016/j.jpowsour.2013.10.026
+
 Created on Wed Jul  8 17:15:34 2020
 
 @author: tyler
+Do it for the Vine!
 """
 
 import numpy as np
@@ -22,16 +31,16 @@ class TMap:
         self.volume = arr
         self.shape = arr.shape
         z, y, x = self.shape
-        self.fluid = np.zeros_like(self.volume, dtype=float)
+        self.fluid = np.zeros_like(self.volume, dtype='float16')
         self.tortuosity = None
         self.step_size = step
         self.seeds = []
 
-        self.realspace_map = np.zeros(shape=(z,y,x,3))  #Map of coordinate space to real space for datasets with uneven step sizes
-        for i in range(z):
-            for j in range(y):
-                for k in range(x):
-                    self.realspace_map[i,j,k] = [i*self.step_size[0], j*self.step_size[1], k*self.step_size[2]]
+        # self.realspace_map = np.zeros(shape=(z,y,x,3),dtype='float16')  #Map of coordinate space to real space for datasets with uneven step sizes
+        # for i in range(z):
+        #     for j in range(y):
+        #         for k in range(x):
+        #             self.realspace_map[i,j,k] = [i*self.step_size[0], j*self.step_size[1], k*self.step_size[2]]
 
         if seed is None:
             self.seeds = [self._autoseed_()]
@@ -200,7 +209,9 @@ class TMap:
                 for x, y, z in front_copy:
 
                     if mode=='euclidean' or mode=='block':
-                        distances.append(self.fluid[x,y,z] + euclidean_distance(self.realspace_map[x,y,z], self.realspace_map[a,b,c]))
+                        realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
+                        realspace_coordinates2 = [a*self.step_size[0], b*self.step_size[1], c*self.step_size[2]]
+                        distances.append(self.fluid[x,y,z] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
                     else:
                         distances.append(self.front_index)
 
@@ -231,18 +242,23 @@ class TMap:
             for y, row in enumerate(plane):
                 for z, cell in enumerate(row):
                     tort_map[x, y, z] = self.fluid[x, y, z] / comp_map.fluid[x, y, z]
-        self.tortuosity = tort_map
+        # self.tortuosity = tort_map
 
-        for i, plane in enumerate(self.tortuosity):
-            if i == 0 or i == zz-1:
-                face_voxels = plane.flatten()
-            else:
-                face_voxels = plane[0].flatten()
-                face_voxels = np.hstack((face_voxels, plane[-1].flatten()))
-                face_voxels = np.hstack((face_voxels, plane[0,1:-1].flatten()))
-                face_voxels = np.hstack((face_voxels, plane[-1,1:-1].flatten()))
-        accessible_face_voxels = face_voxels[np.where(face_voxels > 0)]
-        tortuosity = np.mean(accessible_face_voxels)
+        accessible_voxels = tort_map[np.where(self.tortuosity > 0)].flatten()
+
+        if faces_only:
+            for i, plane in enumerate(tort_map):
+                if i == 0 or i == zz-1:
+                    face_voxels = plane.flatten()
+                else:
+                    face_voxels = plane[0].flatten()
+                    face_voxels = np.hstack((face_voxels, plane[-1].flatten()))
+                    face_voxels = np.hstack((face_voxels, plane[0,1:-1].flatten()))
+                    face_voxels = np.hstack((face_voxels, plane[-1,1:-1].flatten()))
+            accessible_face_voxels = face_voxels[np.where(face_voxels > 0)]
+            tortuosity = np.mean(accessible_face_voxels)
+        else:
+            tortuosity = np.mean(accessible_voxels)
 
         return tortuosity, tort_map
 
@@ -253,10 +269,10 @@ class TMap:
         np.save(fname_prefix+'_fluid.npy', self.fluid)
         np.save(fname_prefix+'_solid.npy', self.volume)
         np.save(fname_prefix+'_seeds.npy', seeds)
-        if self.tortuosity is not None: np.save(fname_prefix+'_tortuosity.npy', self.tortuosity)
+        # if self.tortuosity is not None: np.save(fname_prefix+'_tortuosity.npy', self.tortuosity)
         return
 
-    def show(self, mode='tortuosity', title=None):
+    def show(self, mode='tortuosity', title=None, showseed=True):
         zz,yy,xx = self.shape
 
         #build seed map
@@ -264,9 +280,9 @@ class TMap:
         for z, y, x in self.seeds:
             seedmap[z,y,x] = 1
 
-        if mode == 'tortuosity':
-            mappable = self.tortuosity
-        elif mode == 'fluid':
+        # if mode == 'tortuosity':
+        #     mappable = self.tortuosity
+        if mode == 'fluid':
             mappable = self.fluid
         for i in range(zz):
             plt.figure()
@@ -274,9 +290,10 @@ class TMap:
             plt.colorbar()
             plt.imshow(self.volume[i], cmap='Reds', alpha=0.4)
             # plt.imshow(seedmap[i],cmap='Greens',alpha=0.5)
-            for z, y, x  in self.seeds:
-                if z == i:
-                    plt.scatter(x,y,c='g')
+            if showseed:
+                for z, y, x  in self.seeds:
+                    if z == i:
+                        plt.scatter(x,y,c='g')
 
             if title is not None:
                 title_string = title + ': Layer %i'%(i+1)
