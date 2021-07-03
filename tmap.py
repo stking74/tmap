@@ -17,6 +17,28 @@ Do it for the Vine!
 import numpy as np
 import matplotlib.pyplot as plt
 
+def prop_voxel(coords, volume_value, tort_value, step_size, front_index, front, mode):
+                
+    front_copy, front_values = front
+    new_front_coords = []
+    a,b,c = coords
+    distances = []
+
+    if volume_value==0 and tort_value==0:
+
+        new_front_coords.append((a,b,c))
+
+        for i, (x, y, z) in enumerate(front_copy):
+
+            if mode=='euclidean' or mode=='block':
+                realspace_coordinates1 = [x*step_size[0], y*step_size[1], z*step_size[2]]
+                realspace_coordinates2 = [a*step_size[0], b*step_size[1], c*step_size[2]]
+                distances.append(front_values[i] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
+            else:
+                distances.append(front_index)
+
+        return min(distances), new_front_coords
+
 def euclidean_distance(a,b):
     x1, y1, z1 = a
     x2, y2, z2 = b
@@ -233,6 +255,122 @@ class TMap:
             new_sum = np.sum(self.fluid)
         return
 
+    def fill_mp(self, mode='euclidean', n_cores=2):
+
+        def step_mp(mode='chessboard'):
+
+            pool = Pool(processes=n_cores)
+
+            approved_modes = ('chessboard', 'block', 'euclidean')
+            try:
+                assert mode in approved_modes
+            except AssertionError:
+                raise ValueError('%s not recognized as an approved mode!')
+
+            front_copy = list(self.prop_front)
+            front_values = [self.fluid[x,y,z] for x,y,z in self.prop_front]
+            front = (front_copy, front_values)
+            self.front_index += 1
+
+            test_coords = set()
+            for x, y, z in front_copy:
+                if mode == 'block':
+                    test_coords |= set([
+
+                    # Coordinate axes
+                    (x+1, y, z),
+                    (x-1, y, z),
+                    (x, y+1, z),
+                    (x, y-1, z),
+                    (x, y, z+1),
+                    (x, y, z-1)
+
+                    ])
+                else:
+                    test_coords |= set([
+
+                    # Coordinate axes
+                    (x+1, y, z),
+                    (x-1, y, z),
+                    (x, y+1, z),
+                    (x, y-1, z),
+                    (x, y, z+1),
+                    (x, y, z-1),
+
+                    # In-plane diagonals
+                    (x+1,y+1,z),
+                    (x+1,y-1,z),
+                    (x-1,y+1,z),
+                    (x+1,y-1,z),
+
+                    # z+1 diagonals
+                    (x + 1, y + 1, z + 1),
+                    (x - 1, y + 1, z + 1),
+                    (x + 1, y - 1, z + 1),
+                    (x - 1, y - 1, z + 1),
+                    (x + 1, y, z + 1),
+                    (x - 1, y, z + 1),
+                    (x, y - 1, z + 1),
+                    (x, y + 1, z + 1),
+
+                    # z-1 diagonals
+                    (x + 1, y + 1, z - 1),
+                    (x - 1, y + 1, z - 1),
+                    (x + 1, y - 1, z - 1),
+                    (x - 1, y - 1, z - 1),
+                    (x + 1, y, z - 1),
+                    (x - 1, y, z - 1),
+                    (x, y - 1, z - 1),
+                    (x, y + 1, z - 1)
+
+                    ])
+
+                self.prop_front.remove((x,y,z))
+
+            for a, b, c in list(test_coords):
+
+                if any([
+                    a<0, b<0, c<0,
+                    a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
+                        ]):
+                    test_coords.remove((a,b,c))
+
+            param_list = [((a,b,c), self.volume[a,b,c], self.fluid[a,b,c], self.step_size, self.front_index, front, mode) for (a,b,c) in test_coords]
+            
+            test_params = param_list[7]
+            test_result = prop_voxel(test_params[0],test_params[1],test_params[2],test_params[3],test_params[4],test_params[5],test_params[6])
+
+            results = pool.starmap(prop_voxel, param_list)
+
+            pool.close()
+            pool.join()
+
+            new_front_coords = set()
+
+            for i, (a,b,c) in enumerate(test_coords):
+                result = results[i]
+                if result is not None:
+                    distance, new_front = results[i]
+                    self.fluid[a,b,c] = distance
+                    for c in new_front:
+                        new_front_coords.add(c)
+
+            self.prop_front += list(new_front_coords)
+
+            return
+
+        from multiprocessing import Pool
+        
+        
+
+        old_sum = 0
+        new_sum = 1
+        while new_sum > old_sum:
+            old_sum = float(new_sum)
+            step_mp(mode=mode)
+            new_sum = np.sum(self.fluid)
+        return
+
     def calc_tortuosity(self, mode='euclidean', faces_only=False):
         zz,xx,yy = self.shape
         comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
@@ -244,7 +382,7 @@ class TMap:
                     tort_map[x, y, z] = self.fluid[x, y, z] / comp_map.fluid[x, y, z]
         # self.tortuosity = tort_map
 
-        accessible_voxels = tort_map[np.where(self.tortuosity > 0)].flatten()
+        accessible_voxels = tort_map[np.where(tort_map > 0)].flatten()
 
         if faces_only:
             for i, plane in enumerate(tort_map):
