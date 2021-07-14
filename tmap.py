@@ -16,6 +16,7 @@ Do it for the Vine!
 
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 def euclidean_distance(a,b):
     x1, y1, z1 = a
@@ -31,7 +32,7 @@ class TMap:
         self.volume = arr
         self.shape = arr.shape
         z, y, x = self.shape
-        self.fluid = np.zeros_like(self.volume, dtype='float16')
+        self.fluid = np.zeros_like(self.volume, dtype='float32')
         self.tortuosity = None
         self.step_size = step
         self.seeds = []
@@ -134,6 +135,7 @@ class TMap:
         self.front_index += 1
 
         test_coords = set()
+        vshape = self.volume.shape
         for x, y, z in front_copy:
             if mode == 'block':
                 test_coords |= set([
@@ -192,7 +194,7 @@ class TMap:
 
             if any([
                 a<0, b<0, c<0,
-                a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
+                a>=vshape[0], b>=vshape[1], c>=vshape[2]
                     ]):
                 test_coords.remove((a,b,c))
 
@@ -207,6 +209,8 @@ class TMap:
                 self.prop_front.append((a,b,c))
 
                 for x, y, z in front_copy:
+                    
+                    if any([a < x-1, a > x + 1, b < y-1, b > y+1, c<z-1, c>z+1]): continue
 
                     if mode=='euclidean' or mode=='block':
                         realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
@@ -244,7 +248,7 @@ class TMap:
                     tort_map[x, y, z] = self.fluid[x, y, z] / comp_map.fluid[x, y, z]
         # self.tortuosity = tort_map
 
-        accessible_voxels = tort_map[np.where(self.tortuosity > 0)].flatten()
+        accessible_voxels = tort_map[np.where(tort_map > 0)].flatten()
 
         if faces_only:
             for i, plane in enumerate(tort_map):
