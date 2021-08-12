@@ -16,9 +16,10 @@ Do it for the Vine!
 
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 def prop_voxel(coords, volume_value, tort_value, step_size, front_index, front, mode):
-                
+
     front_copy, front_values = front
     new_front_coords = []
     a,b,c = coords
@@ -48,12 +49,16 @@ def euclidean_distance(a,b):
 class TMap:
 
     def __init__(self, arr, seed=None, step=(1,1,1)):
+        '''
+        Input array serves as a mask to discriminate pore volume from solid material.
+        Expects boolean array, with all solid voxels flagged as True or 1 and all pore voxels flagged as False or 0.
+        '''
         self.prop_front = []
         self.front_index = 1
         self.volume = arr
         self.shape = arr.shape
         z, y, x = self.shape
-        self.fluid = np.zeros_like(self.volume, dtype='float16')
+        self.fluid = np.zeros_like(self.volume, dtype=np.float32)
         self.tortuosity = None
         self.step_size = step
         self.seeds = []
@@ -149,6 +154,7 @@ class TMap:
         approved_modes = ('chessboard', 'block', 'euclidean')
         try:
             assert mode in approved_modes
+            
         except AssertionError:
             raise ValueError('%s not recognized as an approved mode!')
 
@@ -209,7 +215,9 @@ class TMap:
                 ])
 
             self.prop_front.remove((x,y,z))
-
+            
+        vvals = []
+        tvals = []
         for a, b, c in list(test_coords):
 
             if any([
@@ -217,27 +225,44 @@ class TMap:
                 a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
                     ]):
                 test_coords.remove((a,b,c))
-
-        for a, b, c in test_coords:
-
+                continue
+            
             volume_value = self.volume[a,b,c]
             tort_value = self.fluid[a,b,c]
+            if volume_value!=0 and tort_value!=0:
+                test_coords.remove((a,b,c))
+                continue
+            vvals.append(volume_value)
+            tvals.append(tort_value)
+
+        for a, b, c in test_coords:
+            
             distances = []
 
-            if volume_value==0 and tort_value==0:
+            self.prop_front.append((a,b,c))
 
-                self.prop_front.append((a,b,c))
+            for x, y, z in front_copy:
 
-                for x, y, z in front_copy:
+                test_conditions = [
+                    x < a - 1,
+                    x > a + 1,
+                    y < b - 1,
+                    y > b + 1,
+                    z < c - 1,
+                    z > c + 1
+                ]
 
-                    if mode=='euclidean' or mode=='block':
-                        realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
-                        realspace_coordinates2 = [a*self.step_size[0], b*self.step_size[1], c*self.step_size[2]]
-                        distances.append(self.fluid[x,y,z] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
-                    else:
-                        distances.append(self.front_index)
+                if any(test_conditions):
+                    continue
 
-                self.fluid[a,b,c] = min(distances)
+                if mode=='euclidean' or mode=='block':
+                    realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
+                    realspace_coordinates2 = [a*self.step_size[0], b*self.step_size[1], c*self.step_size[2]]
+                    distances.append(self.fluid[x,y,z] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
+                else:
+                    distances.append(self.front_index)
+
+            self.fluid[a,b,c] = min(distances)
 
         return
 
@@ -249,127 +274,131 @@ class TMap:
     def fill(self, mode='euclidean'):
         old_sum = 0
         new_sum = 1
+        step_count = 0
         while new_sum > old_sum:
             old_sum = float(new_sum)
+            ti = time.time()
             self.step(mode=mode)
             new_sum = np.sum(self.fluid)
+            print('Step %i:\nNewSum:%i\nCalcTime:%i'%(step_count, new_sum, time.time()-ti))
+
         return
 
-    def fill_mp(self, mode='euclidean', n_cores=2):
+    # def fill_mp(self, mode='euclidean', n_cores=2):
 
-        def step_mp(mode='chessboard'):
+    #     def step_mp(mode='chessboard'):
 
-            pool = Pool(processes=n_cores)
+    #         pool = Pool(processes=n_cores)
 
-            approved_modes = ('chessboard', 'block', 'euclidean')
-            try:
-                assert mode in approved_modes
-            except AssertionError:
-                raise ValueError('%s not recognized as an approved mode!')
+    #         approved_modes = ('chessboard', 'block', 'euclidean')
+    #         try:
+    #             assert mode in approved_modes
+    #         except AssertionError:
+    #             raise ValueError('%s not recognized as an approved mode!')
 
-            front_copy = list(self.prop_front)
-            front_values = [self.fluid[x,y,z] for x,y,z in self.prop_front]
-            front = (front_copy, front_values)
-            self.front_index += 1
+    #         front_copy = list(self.prop_front)
+    #         front_values = [self.fluid[x,y,z] for x,y,z in self.prop_front]
+    #         front = (front_copy, front_values)
+    #         self.front_index += 1
 
-            test_coords = set()
-            for x, y, z in front_copy:
-                if mode == 'block':
-                    test_coords |= set([
+    #         test_coords = set()
+    #         for x, y, z in front_copy:
+    #             if mode == 'block':
+    #                 test_coords |= set([
 
-                    # Coordinate axes
-                    (x+1, y, z),
-                    (x-1, y, z),
-                    (x, y+1, z),
-                    (x, y-1, z),
-                    (x, y, z+1),
-                    (x, y, z-1)
+    #                 # Coordinate axes
+    #                 (x+1, y, z),
+    #                 (x-1, y, z),
+    #                 (x, y+1, z),
+    #                 (x, y-1, z),
+    #                 (x, y, z+1),
+    #                 (x, y, z-1)
 
-                    ])
-                else:
-                    test_coords |= set([
+    #                 ])
+    #             else:
+    #                 test_coords |= set([
 
-                    # Coordinate axes
-                    (x+1, y, z),
-                    (x-1, y, z),
-                    (x, y+1, z),
-                    (x, y-1, z),
-                    (x, y, z+1),
-                    (x, y, z-1),
+    #                 # Coordinate axes
+    #                 (x+1, y, z),
+    #                 (x-1, y, z),
+    #                 (x, y+1, z),
+    #                 (x, y-1, z),
+    #                 (x, y, z+1),
+    #                 (x, y, z-1),
 
-                    # In-plane diagonals
-                    (x+1,y+1,z),
-                    (x+1,y-1,z),
-                    (x-1,y+1,z),
-                    (x+1,y-1,z),
+    #                 # In-plane diagonals
+    #                 (x+1,y+1,z),
+    #                 (x+1,y-1,z),
+    #                 (x-1,y+1,z),
+    #                 (x+1,y-1,z),
 
-                    # z+1 diagonals
-                    (x + 1, y + 1, z + 1),
-                    (x - 1, y + 1, z + 1),
-                    (x + 1, y - 1, z + 1),
-                    (x - 1, y - 1, z + 1),
-                    (x + 1, y, z + 1),
-                    (x - 1, y, z + 1),
-                    (x, y - 1, z + 1),
-                    (x, y + 1, z + 1),
+    #                 # z+1 diagonals
+    #                 (x + 1, y + 1, z + 1),
+    #                 (x - 1, y + 1, z + 1),
+    #                 (x + 1, y - 1, z + 1),
+    #                 (x - 1, y - 1, z + 1),
+    #                 (x + 1, y, z + 1),
+    #                 (x - 1, y, z + 1),
+    #                 (x, y - 1, z + 1),
+    #                 (x, y + 1, z + 1),
 
-                    # z-1 diagonals
-                    (x + 1, y + 1, z - 1),
-                    (x - 1, y + 1, z - 1),
-                    (x + 1, y - 1, z - 1),
-                    (x - 1, y - 1, z - 1),
-                    (x + 1, y, z - 1),
-                    (x - 1, y, z - 1),
-                    (x, y - 1, z - 1),
-                    (x, y + 1, z - 1)
+    #                 # z-1 diagonals
+    #                 (x + 1, y + 1, z - 1),
+    #                 (x - 1, y + 1, z - 1),
+    #                 (x + 1, y - 1, z - 1),
+    #                 (x - 1, y - 1, z - 1),
+    #                 (x + 1, y, z - 1),
+    #                 (x - 1, y, z - 1),
+    #                 (x, y - 1, z - 1),
+    #                 (x, y + 1, z - 1)
 
-                    ])
+    #                 ])
 
-                self.prop_front.remove((x,y,z))
+    #             self.prop_front.remove((x,y,z))
 
-            for a, b, c in list(test_coords):
+    #         for a, b, c in list(test_coords):
 
-                if any([
-                    a<0, b<0, c<0,
-                    a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
-                        ]):
-                    test_coords.remove((a,b,c))
+    #             if any([
+    #                 a<0, b<0, c<0,
+    #                 a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
+    #                     ]):
+    #                 test_coords.remove((a,b,c))
 
-            param_list = [((a,b,c), self.volume[a,b,c], self.fluid[a,b,c], self.step_size, self.front_index, front, mode) for (a,b,c) in test_coords]
-            
-            test_params = param_list[7]
-            test_result = prop_voxel(test_params[0],test_params[1],test_params[2],test_params[3],test_params[4],test_params[5],test_params[6])
+    #         param_list = [((a,b,c), self.volume[a,b,c], self.fluid[a,b,c], self.step_size, self.front_index, front, mode) for (a,b,c) in test_coords]
 
-            results = pool.starmap(prop_voxel, param_list)
+    #         test_params = param_list[7]
+    #         test_result = prop_voxel(test_params[0],test_params[1],test_params[2],test_params[3],test_params[4],test_params[5],test_params[6])
 
-            pool.close()
-            pool.join()
+    #         results = pool.starmap(prop_voxel, param_list)
 
-            new_front_coords = set()
+    #         pool.close()
+    #         pool.join()
 
-            for i, (a,b,c) in enumerate(test_coords):
-                result = results[i]
-                if result is not None:
-                    distance, new_front = results[i]
-                    self.fluid[a,b,c] = distance
-                    for c in new_front:
-                        new_front_coords.add(c)
+    #         new_front_coords = set()
 
-            self.prop_front += list(new_front_coords)
+    #         for i, (a,b,c) in enumerate(test_coords):
+    #             result = results[i]
+    #             if result is not None:
+    #                 distance, new_front = results[i]
+    #                 self.fluid[a,b,c] = distance
+    #                 for c in new_front:
+    #                     new_front_coords.add(c)
 
-            return
+    #         self.prop_front += list(new_front_coords)
 
-        from multiprocessing import Pool
-        
-        
+    #         return
 
-        old_sum = 0
-        new_sum = 1
-        while new_sum > old_sum:
-            old_sum = float(new_sum)
-            step_mp(mode=mode)
-            new_sum = np.sum(self.fluid)
-        return
+    #     from multiprocessing import Pool
+
+
+
+    #     old_sum = 0
+    #     new_sum = 1
+    #     while new_sum > old_sum:
+    #         old_sum = float(new_sum)
+    #         step_mp(mode=mode)
+    #         new_sum = np.sum(self.fluid)
+    #     return
 
     def calc_tortuosity(self, mode='euclidean', faces_only=False):
         zz,xx,yy = self.shape
