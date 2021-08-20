@@ -14,9 +14,12 @@ Created on Wed Jul  8 17:15:34 2020
 Do it for the Vine!
 """
 
+import os
+import time
+
 import numpy as np
 import matplotlib.pyplot as plt
-import time
+import h5py
 
 def prop_voxel(coords, volume_value, tort_value, step_size, front_index, front, mode):
 
@@ -154,7 +157,7 @@ class TMap:
         approved_modes = ('chessboard', 'block', 'euclidean')
         try:
             assert mode in approved_modes
-            
+
         except AssertionError:
             raise ValueError('%s not recognized as an approved mode!')
 
@@ -215,7 +218,7 @@ class TMap:
                 ])
 
             self.prop_front.remove((x,y,z))
-            
+
         vvals = []
         tvals = []
         for a, b, c in list(test_coords):
@@ -226,17 +229,17 @@ class TMap:
                     ]):
                 test_coords.remove((a,b,c))
                 continue
-            
+
             volume_value = self.volume[a,b,c]
             tort_value = self.fluid[a,b,c]
-            if volume_value!=0 and tort_value!=0:
+            if volume_value!=0 or tort_value!=0:
                 test_coords.remove((a,b,c))
                 continue
             vvals.append(volume_value)
             tvals.append(tort_value)
 
         for a, b, c in test_coords:
-            
+
             distances = []
 
             self.prop_front.append((a,b,c))
@@ -271,9 +274,12 @@ class TMap:
             self.step()
         return
 
-    def fill(self, mode='euclidean'):
-        old_sum = 0
-        new_sum = 1
+    def fill(self, mode='euclidean', save_q=0, fname=None):
+        if save_q > 0:
+            assert fname is not None, 'A filename must be specified to save an in-progress calculation'
+
+        old_sum = np.sum(self.fluid)
+        new_sum = old_sum + 1
         step_count = 0
         while new_sum > old_sum:
             old_sum = float(new_sum)
@@ -281,6 +287,10 @@ class TMap:
             self.step(mode=mode)
             new_sum = np.sum(self.fluid)
             print('Step %i:\nNewSum:%i\nCalcTime:%i'%(step_count, new_sum, time.time()-ti))
+            step_count += 1
+            if save_q > 0:
+                if step_count % save_q == 0:
+                    self.save(fname)
 
         return
 
@@ -429,15 +439,34 @@ class TMap:
 
         return tortuosity, tort_map
 
-    def save(self, fname_prefix):
-        seeds = np.zeros((len(self.seeds),3))
-        for i, (z, y, x) in enumerate(self.seeds):
-            seeds[i] = [z,y,x]
-        np.save(fname_prefix+'_fluid.npy', self.fluid)
-        np.save(fname_prefix+'_solid.npy', self.volume)
-        np.save(fname_prefix+'_seeds.npy', seeds)
-        # if self.tortuosity is not None: np.save(fname_prefix+'_tortuosity.npy', self.tortuosity)
+    def save(self, fname):
+        '''
+        Saves tortuosity mapper to disk as HDF5 file.
+        '''
+
+        #Check if file already exists
+        fname = os.path.abspath(fname)
+        if os.path.isfile(fname):
+            hf = h5py.File(fname, 'r+')
+        else:
+            hf = h5py.File(fname, 'w')
+            hf.create_dataset(name='base', dtype=int, data=self.volume)
+            hf.create_dataset(name='fluid', dtype=np.float32, shape=self.shape)
+            if self.tortuosity is not None:
+                hf.create_dataset('tortmap', dtype=np.float32, shape=self.shape)
+            hf.create_dataset('seeds', data=self.seeds)
+
+        hf['fluid'][:] = self.fluid[:]
+        hf['fluid'].attrs.create('front', np.array(self.prop_front))
+        if self.tortuosity is not None:
+            hf['tortmap'][:] = self.tortuosity[:]
+
+        hf.close()
         return
+
+    @staticmethod
+    def load(fname):
+        pass
 
     def show(self, mode='tortuosity', title=None, showseed=True):
         zz,yy,xx = self.shape
@@ -469,48 +498,51 @@ class TMap:
 if __name__ == "__main__":
     base = np.load('base.npy')
 
-    tmap = TMap(base, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Isotropic')
+    ti = time.time()
+    tmap = TMap(base, step=(5,5,5))
+    tmap.fill('chessboard', fname='testfile.h5', save_q=0)
+    tortuosity, tortuosity_map = tmap.calc_tortuosity('chessboard')
+    dt = time.time() - ti
+    tmap.show(title='Isotropic', mode='fluid')
     print('Isotropic tortuosity: %f'%(tortuosity))
+    print('Calculated in %f seconds'%(dt))
 
-    tortuosities = []
-    for i in range(25):
-        tmap = TMap(base, step=(5,10,10), seed='random')
-        tmap.fill('euclidean')
-        tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-        # tmap.show(title='Isotropic')
-        tortuosities.append(tortuosity)
+    # tortuosities = []
+    # for i in range(25):
+    #     tmap = TMap(base, step=(5,10,10), seed='random')
+    #     tmap.fill('euclidean')
+    #     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    #     # tmap.show(title='Isotropic')
+    #     tortuosities.append(tortuosity)
 
-    print('Randomized Isotropic tortuosity: %f'%(np.median(tortuosities)))
+    # print('Randomized Isotropic tortuosity: %f'%(np.median(tortuosities)))
 
-    seeds = []
-    for i in range(25):
-        for j in range(25):
-            seeds.append((0,i,j))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic Z')
-    print('Ansotropic tortuosity Z: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(25):
+    #         seeds.append((0,i,j))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic Z')
+    # print('Ansotropic tortuosity Z: %f'%(tortuosity))
 
-    seeds = []
-    for i in range(25):
-        for j in range(4):
-            seeds.append((j,0,i))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic Y')
-    print('Ansotropic tortuosity Y: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(4):
+    #         seeds.append((j,0,i))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic Y')
+    # print('Ansotropic tortuosity Y: %f'%(tortuosity))
 
-    seeds = []
-    for i in range(25):
-        for j in range(4):
-            seeds.append((j,i,0))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic X')
-    print('Ansotropic tortuosity X: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(4):
+    #         seeds.append((j,i,0))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic X')
+    # print('Ansotropic tortuosity X: %f'%(tortuosity))
