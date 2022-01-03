@@ -14,11 +14,15 @@ Created on Wed Jul  8 17:15:34 2020
 Do it for the Vine!
 """
 
+import os
+import time
+
 import numpy as np
 import matplotlib.pyplot as plt
+import h5py
 
 def prop_voxel(coords, volume_value, tort_value, step_size, front_index, front, mode):
-                
+
     front_copy, front_values = front
     new_front_coords = []
     a,b,c = coords
@@ -48,15 +52,20 @@ def euclidean_distance(a,b):
 class TMap:
 
     def __init__(self, arr, seed=None, step=(1,1,1)):
+        '''
+        Input array serves as a mask to discriminate pore volume from solid material.
+        Expects boolean array, with all solid voxels flagged as True or 1 and all pore voxels flagged as False or 0.
+        '''
         self.prop_front = []
         self.front_index = 1
         self.volume = arr
         self.shape = arr.shape
         z, y, x = self.shape
-        self.fluid = np.zeros_like(self.volume, dtype='float16')
+        self.fluid = np.zeros_like(self.volume, dtype=np.float32)
         self.tortuosity = None
         self.step_size = step
         self.seeds = []
+        self.seedmode = None
 
         # self.realspace_map = np.zeros(shape=(z,y,x,3),dtype='float16')  #Map of coordinate space to real space for datasets with uneven step sizes
         # for i in range(z):
@@ -71,10 +80,13 @@ class TMap:
                 self.seeds = seed
             elif type(seed) is str:
                 acceptable_strings = ['random','center','x','-x','y','-y','z','-z']
+                assert seed in acceptable_strings
+                self.seedmode = seed
                 if seed == 'random':
                     #If seed is 'random', randomly generate coordinate tuples
                     #until an empty voxel is found, use as intiial seed
                     is_empty = False
+
                     while is_empty == False:
                         x, y, z = self.shape
                         a, b, c = [np.random.randint(0,i) for i in [x, y, z]]
@@ -102,11 +114,11 @@ class TMap:
                 elif seed == 'z':
                     for i in range(x):
                         for j in range(y):
-                            self.seeds.append((0,i,j))
+                            self.seeds.append((0,j,i))
                 elif seed == '-z':
                     for i in range(x):
                         for j in range(y):
-                            self.seeds.append((z-1,i,j))
+                            self.seeds.append((z-1,j,i))
 
         for seed in self.seeds:
             self.set_seed(seed)
@@ -149,6 +161,7 @@ class TMap:
         approved_modes = ('chessboard', 'block', 'euclidean')
         try:
             assert mode in approved_modes
+
         except AssertionError:
             raise ValueError('%s not recognized as an approved mode!')
 
@@ -210,6 +223,8 @@ class TMap:
 
             self.prop_front.remove((x,y,z))
 
+        vvals = []
+        tvals = []
         for a, b, c in list(test_coords):
 
             if any([
@@ -217,27 +232,44 @@ class TMap:
                 a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
                     ]):
                 test_coords.remove((a,b,c))
-
-        for a, b, c in test_coords:
+                continue
 
             volume_value = self.volume[a,b,c]
             tort_value = self.fluid[a,b,c]
+            if volume_value!=0 or tort_value!=0:
+                test_coords.remove((a,b,c))
+                continue
+            vvals.append(volume_value)
+            tvals.append(tort_value)
+
+        for a, b, c in test_coords:
+
             distances = []
 
-            if volume_value==0 and tort_value==0:
+            self.prop_front.append((a,b,c))
 
-                self.prop_front.append((a,b,c))
+            for x, y, z in front_copy:
 
-                for x, y, z in front_copy:
+                test_conditions = [
+                    x < a - 1,
+                    x > a + 1,
+                    y < b - 1,
+                    y > b + 1,
+                    z < c - 1,
+                    z > c + 1
+                ]
 
-                    if mode=='euclidean' or mode=='block':
-                        realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
-                        realspace_coordinates2 = [a*self.step_size[0], b*self.step_size[1], c*self.step_size[2]]
-                        distances.append(self.fluid[x,y,z] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
-                    else:
-                        distances.append(self.front_index)
+                if any(test_conditions):
+                    continue
 
-                self.fluid[a,b,c] = min(distances)
+                if mode=='euclidean' or mode=='block':
+                    realspace_coordinates1 = [x*self.step_size[0], y*self.step_size[1], z*self.step_size[2]]
+                    realspace_coordinates2 = [a*self.step_size[0], b*self.step_size[1], c*self.step_size[2]]
+                    distances.append(self.fluid[x,y,z] + euclidean_distance(realspace_coordinates1, realspace_coordinates2))
+                else:
+                    distances.append(self.front_index)
+
+            self.fluid[a,b,c] = min(distances)
 
         return
 
@@ -246,140 +278,189 @@ class TMap:
             self.step()
         return
 
-    def fill(self, mode='euclidean'):
-        old_sum = 0
-        new_sum = 1
+    def fill(self, mode='euclidean', save_q=0, fname=None):
+
+        if save_q > 0:
+            save_count = 0
+            assert fname is not None, 'A filename must be specified to save an in-progress calculation'
+
+        old_sum = np.sum(self.fluid)
+        new_sum = old_sum + 1
+        step_count = 0
         while new_sum > old_sum:
+            if save_q > 0:
+                if step_count % save_q == 0:
+                    qfname = fname[:-3]+'_%i.h5'%(save_count)
+                    self.save(qfname)
+                    save_count += 1
             old_sum = float(new_sum)
+            ti = time.time()
             self.step(mode=mode)
             new_sum = np.sum(self.fluid)
+            print('Step %i:\nNewSum:%i\nCalcTime:%i'%(step_count, new_sum, time.time()-ti))
+            step_count += 1
+
+
         return
 
-    def fill_mp(self, mode='euclidean', n_cores=2):
+    # def fill_mp(self, mode='euclidean', n_cores=2):
 
-        def step_mp(mode='chessboard'):
+    #     def step_mp(mode='chessboard'):
 
-            pool = Pool(processes=n_cores)
+    #         pool = Pool(processes=n_cores)
 
-            approved_modes = ('chessboard', 'block', 'euclidean')
-            try:
-                assert mode in approved_modes
-            except AssertionError:
-                raise ValueError('%s not recognized as an approved mode!')
+    #         approved_modes = ('chessboard', 'block', 'euclidean')
+    #         try:
+    #             assert mode in approved_modes
+    #         except AssertionError:
+    #             raise ValueError('%s not recognized as an approved mode!')
 
-            front_copy = list(self.prop_front)
-            front_values = [self.fluid[x,y,z] for x,y,z in self.prop_front]
-            front = (front_copy, front_values)
-            self.front_index += 1
+    #         front_copy = list(self.prop_front)
+    #         front_values = [self.fluid[x,y,z] for x,y,z in self.prop_front]
+    #         front = (front_copy, front_values)
+    #         self.front_index += 1
 
-            test_coords = set()
-            for x, y, z in front_copy:
-                if mode == 'block':
-                    test_coords |= set([
+    #         test_coords = set()
+    #         for x, y, z in front_copy:
+    #             if mode == 'block':
+    #                 test_coords |= set([
 
-                    # Coordinate axes
-                    (x+1, y, z),
-                    (x-1, y, z),
-                    (x, y+1, z),
-                    (x, y-1, z),
-                    (x, y, z+1),
-                    (x, y, z-1)
+    #                 # Coordinate axes
+    #                 (x+1, y, z),
+    #                 (x-1, y, z),
+    #                 (x, y+1, z),
+    #                 (x, y-1, z),
+    #                 (x, y, z+1),
+    #                 (x, y, z-1)
 
-                    ])
-                else:
-                    test_coords |= set([
+    #                 ])
+    #             else:
+    #                 test_coords |= set([
 
-                    # Coordinate axes
-                    (x+1, y, z),
-                    (x-1, y, z),
-                    (x, y+1, z),
-                    (x, y-1, z),
-                    (x, y, z+1),
-                    (x, y, z-1),
+    #                 # Coordinate axes
+    #                 (x+1, y, z),
+    #                 (x-1, y, z),
+    #                 (x, y+1, z),
+    #                 (x, y-1, z),
+    #                 (x, y, z+1),
+    #                 (x, y, z-1),
 
-                    # In-plane diagonals
-                    (x+1,y+1,z),
-                    (x+1,y-1,z),
-                    (x-1,y+1,z),
-                    (x+1,y-1,z),
+    #                 # In-plane diagonals
+    #                 (x+1,y+1,z),
+    #                 (x+1,y-1,z),
+    #                 (x-1,y+1,z),
+    #                 (x+1,y-1,z),
 
-                    # z+1 diagonals
-                    (x + 1, y + 1, z + 1),
-                    (x - 1, y + 1, z + 1),
-                    (x + 1, y - 1, z + 1),
-                    (x - 1, y - 1, z + 1),
-                    (x + 1, y, z + 1),
-                    (x - 1, y, z + 1),
-                    (x, y - 1, z + 1),
-                    (x, y + 1, z + 1),
+    #                 # z+1 diagonals
+    #                 (x + 1, y + 1, z + 1),
+    #                 (x - 1, y + 1, z + 1),
+    #                 (x + 1, y - 1, z + 1),
+    #                 (x - 1, y - 1, z + 1),
+    #                 (x + 1, y, z + 1),
+    #                 (x - 1, y, z + 1),
+    #                 (x, y - 1, z + 1),
+    #                 (x, y + 1, z + 1),
 
-                    # z-1 diagonals
-                    (x + 1, y + 1, z - 1),
-                    (x - 1, y + 1, z - 1),
-                    (x + 1, y - 1, z - 1),
-                    (x - 1, y - 1, z - 1),
-                    (x + 1, y, z - 1),
-                    (x - 1, y, z - 1),
-                    (x, y - 1, z - 1),
-                    (x, y + 1, z - 1)
+    #                 # z-1 diagonals
+    #                 (x + 1, y + 1, z - 1),
+    #                 (x - 1, y + 1, z - 1),
+    #                 (x + 1, y - 1, z - 1),
+    #                 (x - 1, y - 1, z - 1),
+    #                 (x + 1, y, z - 1),
+    #                 (x - 1, y, z - 1),
+    #                 (x, y - 1, z - 1),
+    #                 (x, y + 1, z - 1)
 
-                    ])
+    #                 ])
 
-                self.prop_front.remove((x,y,z))
+    #             self.prop_front.remove((x,y,z))
 
-            for a, b, c in list(test_coords):
+    #         for a, b, c in list(test_coords):
 
-                if any([
-                    a<0, b<0, c<0,
-                    a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
-                        ]):
-                    test_coords.remove((a,b,c))
+    #             if any([
+    #                 a<0, b<0, c<0,
+    #                 a>=self.volume.shape[0], b>=self.volume.shape[1], c>=self.volume.shape[2]
+    #                     ]):
+    #                 test_coords.remove((a,b,c))
 
-            param_list = [((a,b,c), self.volume[a,b,c], self.fluid[a,b,c], self.step_size, self.front_index, front, mode) for (a,b,c) in test_coords]
-            
-            test_params = param_list[7]
-            test_result = prop_voxel(test_params[0],test_params[1],test_params[2],test_params[3],test_params[4],test_params[5],test_params[6])
+    #         param_list = [((a,b,c), self.volume[a,b,c], self.fluid[a,b,c], self.step_size, self.front_index, front, mode) for (a,b,c) in test_coords]
 
-            results = pool.starmap(prop_voxel, param_list)
+    #         test_params = param_list[7]
+    #         test_result = prop_voxel(test_params[0],test_params[1],test_params[2],test_params[3],test_params[4],test_params[5],test_params[6])
 
-            pool.close()
-            pool.join()
+    #         results = pool.starmap(prop_voxel, param_list)
 
-            new_front_coords = set()
+    #         pool.close()
+    #         pool.join()
 
-            for i, (a,b,c) in enumerate(test_coords):
-                result = results[i]
-                if result is not None:
-                    distance, new_front = results[i]
-                    self.fluid[a,b,c] = distance
-                    for c in new_front:
-                        new_front_coords.add(c)
+    #         new_front_coords = set()
 
-            self.prop_front += list(new_front_coords)
+    #         for i, (a,b,c) in enumerate(test_coords):
+    #             result = results[i]
+    #             if result is not None:
+    #                 distance, new_front = results[i]
+    #                 self.fluid[a,b,c] = distance
+    #                 for c in new_front:
+    #                     new_front_coords.add(c)
 
-            return
+    #         self.prop_front += list(new_front_coords)
 
-        from multiprocessing import Pool
-        
-        
+    #         return
 
-        old_sum = 0
-        new_sum = 1
-        while new_sum > old_sum:
-            old_sum = float(new_sum)
-            step_mp(mode=mode)
-            new_sum = np.sum(self.fluid)
-        return
+    #     from multiprocessing import Pool
 
-    def calc_tortuosity(self, mode='euclidean', faces_only=False):
-        zz,xx,yy = self.shape
-        comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
-        comp_map.fill(mode=mode)
+
+
+    #     old_sum = 0
+    #     new_sum = 1
+    #     while new_sum > old_sum:
+    #         old_sum = float(new_sum)
+    #         step_mp(mode=mode)
+    #         new_sum = np.sum(self.fluid)
+    #     return
+
+    def calc_tortuosity(self, mode='euclidean', faces_only=False, reference=None):
+        zz,yy,xx = self.shape
+
+        if reference is None:
+            #Build empty reference
+
+            if self.seedmode=='z':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[0]):
+                    comp_map[i,:,:] = i+1
+            elif self.seedmode=='-z':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[0]):
+                    i+=1
+                    comp_map[-i,:,:] = i
+            elif self.seedmode=='y':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[1]):
+                    comp_map[:,i,:] = i+1
+            elif self.seedmode=='-y':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[1]):
+                    comp_map[:,-i,:] = i+1
+            elif self.seedmode=='x':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[2]):
+                    comp_map[:,:,i] = i+1
+            elif self.seedmode=='-x':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[2]):
+                    comp_map[:,:,-i] = i+1
+            else:
+                comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
+                comp_map.fill(mode=mode)
+                comp_map = comp_map.fluid
+        else: comp_map = reference
+
         tort_map = np.zeros_like(self.fluid, dtype=np.float32)
-        for x, plane in enumerate(tort_map):
+        for z, plane in enumerate(tort_map):
             for y, row in enumerate(plane):
-                for z, cell in enumerate(row):
-                    tort_map[x, y, z] = self.fluid[x, y, z] / comp_map.fluid[x, y, z]
+                for x, cell in enumerate(row):
+                    tort_map[z, y, x] = self.fluid[z, y, x] / comp_map[z, y, x]
         # self.tortuosity = tort_map
 
         accessible_voxels = tort_map[np.where(tort_map > 0)].flatten()
@@ -400,15 +481,34 @@ class TMap:
 
         return tortuosity, tort_map
 
-    def save(self, fname_prefix):
-        seeds = np.zeros((len(self.seeds),3))
-        for i, (z, y, x) in enumerate(self.seeds):
-            seeds[i] = [z,y,x]
-        np.save(fname_prefix+'_fluid.npy', self.fluid)
-        np.save(fname_prefix+'_solid.npy', self.volume)
-        np.save(fname_prefix+'_seeds.npy', seeds)
-        # if self.tortuosity is not None: np.save(fname_prefix+'_tortuosity.npy', self.tortuosity)
+    def save(self, fname):
+        '''
+        Saves tortuosity mapper to disk as HDF5 file.
+        '''
+
+        #Check if file already exists
+        fname = os.path.abspath(fname)
+        if os.path.isfile(fname):
+            hf = h5py.File(fname, 'r+')
+        else:
+            hf = h5py.File(fname, 'w')
+            hf.create_dataset(name='base', dtype=int, data=self.volume)
+            hf.create_dataset(name='fluid', dtype=np.float32, shape=self.shape)
+            if self.tortuosity is not None:
+                hf.create_dataset('tortmap', dtype=np.float32, shape=self.shape)
+            hf.create_dataset('seeds', data=self.seeds)
+
+        hf['fluid'][:] = self.fluid[:]
+        hf['fluid'].attrs.create('front', np.array(self.prop_front))
+        if self.tortuosity is not None:
+            hf['tortmap'][:] = self.tortuosity[:]
+
+        hf.close()
         return
+
+    @staticmethod
+    def load(fname):
+        pass
 
     def show(self, mode='tortuosity', title=None, showseed=True):
         zz,yy,xx = self.shape
@@ -440,48 +540,51 @@ class TMap:
 if __name__ == "__main__":
     base = np.load('base.npy')
 
-    tmap = TMap(base, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Isotropic')
+    ti = time.time()
+    tmap = TMap(base, step=(5,5,5))
+    tmap.fill('chessboard', fname='testfile.h5', save_q=0)
+    tortuosity, tortuosity_map = tmap.calc_tortuosity('chessboard')
+    dt = time.time() - ti
+    tmap.show(title='Isotropic', mode='fluid')
     print('Isotropic tortuosity: %f'%(tortuosity))
+    print('Calculated in %f seconds'%(dt))
 
-    tortuosities = []
-    for i in range(25):
-        tmap = TMap(base, step=(5,10,10), seed='random')
-        tmap.fill('euclidean')
-        tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-        # tmap.show(title='Isotropic')
-        tortuosities.append(tortuosity)
+    # tortuosities = []
+    # for i in range(25):
+    #     tmap = TMap(base, step=(5,10,10), seed='random')
+    #     tmap.fill('euclidean')
+    #     tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    #     # tmap.show(title='Isotropic')
+    #     tortuosities.append(tortuosity)
 
-    print('Randomized Isotropic tortuosity: %f'%(np.median(tortuosities)))
+    # print('Randomized Isotropic tortuosity: %f'%(np.median(tortuosities)))
 
-    seeds = []
-    for i in range(25):
-        for j in range(25):
-            seeds.append((0,i,j))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic Z')
-    print('Ansotropic tortuosity Z: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(25):
+    #         seeds.append((0,i,j))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic Z')
+    # print('Ansotropic tortuosity Z: %f'%(tortuosity))
 
-    seeds = []
-    for i in range(25):
-        for j in range(4):
-            seeds.append((j,0,i))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic Y')
-    print('Ansotropic tortuosity Y: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(4):
+    #         seeds.append((j,0,i))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic Y')
+    # print('Ansotropic tortuosity Y: %f'%(tortuosity))
 
-    seeds = []
-    for i in range(25):
-        for j in range(4):
-            seeds.append((j,i,0))
-    tmap = TMap(base, seed=seeds, step=(5,10,10))
-    tmap.fill('euclidean')
-    tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
-    tmap.show(title='Ansotropic X')
-    print('Ansotropic tortuosity X: %f'%(tortuosity))
+    # seeds = []
+    # for i in range(25):
+    #     for j in range(4):
+    #         seeds.append((j,i,0))
+    # tmap = TMap(base, seed=seeds, step=(5,10,10))
+    # tmap.fill('euclidean')
+    # tortuosity, tortuosity_map = tmap.calc_tortuosity('euclidean')
+    # tmap.show(title='Ansotropic X')
+    # print('Ansotropic tortuosity X: %f'%(tortuosity))
