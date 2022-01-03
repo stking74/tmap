@@ -65,6 +65,7 @@ class TMap:
         self.tortuosity = None
         self.step_size = step
         self.seeds = []
+        self.seedmode = None
 
         # self.realspace_map = np.zeros(shape=(z,y,x,3),dtype='float16')  #Map of coordinate space to real space for datasets with uneven step sizes
         # for i in range(z):
@@ -79,10 +80,13 @@ class TMap:
                 self.seeds = seed
             elif type(seed) is str:
                 acceptable_strings = ['random','center','x','-x','y','-y','z','-z']
+                assert seed in acceptable_strings
+                self.seedmode = seed
                 if seed == 'random':
                     #If seed is 'random', randomly generate coordinate tuples
                     #until an empty voxel is found, use as intiial seed
                     is_empty = False
+
                     while is_empty == False:
                         x, y, z = self.shape
                         a, b, c = [np.random.randint(0,i) for i in [x, y, z]]
@@ -110,11 +114,11 @@ class TMap:
                 elif seed == 'z':
                     for i in range(x):
                         for j in range(y):
-                            self.seeds.append((0,i,j))
+                            self.seeds.append((0,j,i))
                 elif seed == '-z':
                     for i in range(x):
                         for j in range(y):
-                            self.seeds.append((z-1,i,j))
+                            self.seeds.append((z-1,j,i))
 
         for seed in self.seeds:
             self.set_seed(seed)
@@ -275,22 +279,27 @@ class TMap:
         return
 
     def fill(self, mode='euclidean', save_q=0, fname=None):
+
         if save_q > 0:
+            save_count = 0
             assert fname is not None, 'A filename must be specified to save an in-progress calculation'
 
         old_sum = np.sum(self.fluid)
         new_sum = old_sum + 1
         step_count = 0
         while new_sum > old_sum:
+            if save_q > 0:
+                if step_count % save_q == 0:
+                    qfname = fname[:-3]+'_%i.h5'%(save_count)
+                    self.save(qfname)
+                    save_count += 1
             old_sum = float(new_sum)
             ti = time.time()
             self.step(mode=mode)
             new_sum = np.sum(self.fluid)
             print('Step %i:\nNewSum:%i\nCalcTime:%i'%(step_count, new_sum, time.time()-ti))
             step_count += 1
-            if save_q > 0:
-                if step_count % save_q == 0:
-                    self.save(fname)
+
 
         return
 
@@ -410,15 +419,48 @@ class TMap:
     #         new_sum = np.sum(self.fluid)
     #     return
 
-    def calc_tortuosity(self, mode='euclidean', faces_only=False):
-        zz,xx,yy = self.shape
-        comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
-        comp_map.fill(mode=mode)
+    def calc_tortuosity(self, mode='euclidean', faces_only=False, reference=None):
+        zz,yy,xx = self.shape
+
+        if reference is None:
+            #Build empty reference
+
+            if self.seedmode=='z':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[0]):
+                    comp_map[i,:,:] = i+1
+            elif self.seedmode=='-z':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[0]):
+                    i+=1
+                    comp_map[-i,:,:] = i
+            elif self.seedmode=='y':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[1]):
+                    comp_map[:,i,:] = i+1
+            elif self.seedmode=='-y':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[1]):
+                    comp_map[:,-i,:] = i+1
+            elif self.seedmode=='x':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[2]):
+                    comp_map[:,:,i] = i+1
+            elif self.seedmode=='-x':
+                comp_map = np.zeros_like(self.fluid)
+                for i in range(comp_map.shape[2]):
+                    comp_map[:,:,-i] = i+1
+            else:
+                comp_map = TMap(np.zeros_like(self.fluid), seed=self.seeds, step=self.step_size)
+                comp_map.fill(mode=mode)
+                comp_map = comp_map.fluid
+        else: comp_map = reference
+
         tort_map = np.zeros_like(self.fluid, dtype=np.float32)
-        for x, plane in enumerate(tort_map):
+        for z, plane in enumerate(tort_map):
             for y, row in enumerate(plane):
-                for z, cell in enumerate(row):
-                    tort_map[x, y, z] = self.fluid[x, y, z] / comp_map.fluid[x, y, z]
+                for x, cell in enumerate(row):
+                    tort_map[z, y, x] = self.fluid[z, y, x] / comp_map[z, y, x]
         # self.tortuosity = tort_map
 
         accessible_voxels = tort_map[np.where(tort_map > 0)].flatten()
